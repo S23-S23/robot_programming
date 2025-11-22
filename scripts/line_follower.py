@@ -7,109 +7,150 @@ from cv_bridge import CvBridge
 import cv2
 import numpy as np
 
-# 완주는 함 
-
 class LineFollower(Node):
     def __init__(self):
         super().__init__('line_follower')
-        
+
         self.subscription = self.create_subscription(
             Image,
             '/camera/image_raw',
             self.listener_callback,
             10)
         self.publisher = self.create_publisher(Twist, '/cmd_vel', 10)
-        
+
         self.br = CvBridge()
-        
-        # --- [Pivot Turn 전용 변수] ---
-        # 제자리 회전 시 사용할 회전 속도
-        self.pivot_speed = 0.5  
-        # 직진 시 속도
-        self.forward_speed = 0.9 #edtied 
-        
-        # 이 범위(픽셀)를 벗어나면 즉시 멈추고 제자리 회전
-        # 값을 줄일수록 로봇이 더 자주 멈춰서 정교하게 돕니다.
-        self.pivot_threshold = 50 #edited
-        
-        self.last_angular_z = 0.0
+
+        # === 속도 설정 ===
+        self.turbo_speed = 2.5        # 직선 최고 속도
+        self.normal_speed = 1.2       # 일반 주행 속도
+        self.curve_speed = 0.6        # 커브 주행 속도 (정지 X, 전진하며 회전)
+
+        # === 회전 설정 ===
+        self.base_angular_gain = 0.008  # 기본 회전 게인
+        self.curve_angular_gain = 0.012 # 커브에서 더 강한 회전
+        self.pivot_speed = 0.8          # 탐색 회전 속도
+
+        # === 임계값 (픽셀) ===
+        self.turbo_threshold = 25     # 이 안쪽 = 터보
+        self.normal_threshold = 60    # 이 안쪽 = 일반
+        self.curve_threshold = 120    # 이 안쪽 = 커브 (전진+회전)
+        # 이 바깥 = 라인 이탈 (탐색 모드)
+
+        # === 상태 변수 ===
+        self.last_err = 0.0
+        self.last_direction = 1       # 1: 오른쪽, -1: 왼쪽
+        self.current_speed = 0.0
+        self.current_angular = 0.0
+
+        # === Rate Limiter ===
+        self.max_accel = 0.2
+        self.max_decel = 0.4
+        self.max_angular_rate = 0.15
+
+    def find_line_center(self, thresh_img):
+        """가장 큰 컨투어의 중심 찾기"""
+        contours, _ = cv2.findContours(thresh_img, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        if not contours:
+            return None
+
+        largest = max(contours, key=cv2.contourArea)
+
+        if cv2.contourArea(largest) < 80:
+            return None
+
+        M = cv2.moments(largest)
+        if M['m00'] > 0:
+            return int(M['m10'] / M['m00'])
+        return None
+
+    def rate_limit(self, current, target, accel, decel):
+        """급발진/급정지 방지"""
+        diff = target - current
+        if diff > accel:
+            return current + accel
+        elif diff < -decel:
+            return current - decel
+        return target
 
     def listener_callback(self, data):
         try:
-            current_frame = self.br.imgmsg_to_cv2(data, "bgr8")
+            frame = self.br.imgmsg_to_cv2(data, "bgr8")
         except Exception as e:
-            self.get_logger().info(f'Error converting image: {e}')
+            self.get_logger().error(f'Image error: {e}')
             return
 
-        current_frame = cv2.flip(current_frame, -1)
-        h, w, _ = current_frame.shape
-        
-        # --- [시야 설정] ---
-        # 직각 코너에서 엉뚱한 곳을 보지 않도록 하단 30%만 집중
-        search_top = int(h * 0.8)
-        search_bot = h
-        mask_image = current_frame[search_top:search_bot, 0:w]
-        
-        gray = cv2.cvtColor(mask_image, cv2.COLOR_BGR2GRAY)
-        _, thresh = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
-        
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        twist = Twist()
-        
-        if contours:
-            # 가장 큰 라인 덩어리 선택
-            largest_contour = max(contours, key=cv2.contourArea)
-            
-            if cv2.contourArea(largest_contour) > 100:
-                M = cv2.moments(largest_contour)
-                
-                if M['m00'] > 0:
-                    cx = int(M['m10'] / M['m00'])
-                    err = cx - w / 2
-                    
-                    # --- [핵심: Pivot Turn 로직] ---
-                    if abs(err) > self.pivot_threshold:
-                        # [모드 1] 위험: 라인이 중앙에서 벗어남 -> 제자리 회전
-                        twist.linear.x = 0.0  # 전진 금지 (완전 정지)
-                        
-                        # 에러 방향에 맞춰 제자리 돌기
-                        if err > 0: 
-                            twist.angular.z = -self.pivot_speed # 오른쪽 회전
-                        else:       
-                            twist.angular.z = self.pivot_speed  # 왼쪽 회전
-                            
-                        # 다음에 라인을 잃었을 때를 대비해 회전 방향 기억
-                        self.last_angular_z = twist.angular.z
-                        
-                    else:
-                        # [모드 2] 안전: 라인이 중앙에 있음 -> 직진
-                        twist.linear.x = self.forward_speed
-                        
-                        # 직진 중에도 미세한 방향 보정 (P제어)
-                        twist.angular.z = -float(err) * 0.005
-                        
-                else:
-                    # 무게중심 계산 불가 -> 제자리에서 찾기
-                    twist.linear.x = 0.0
-                    twist.angular.z = self.last_angular_z
-            else:
-                # 노이즈 -> 제자리에서 찾기
-                twist.linear.x = 0.0
-                twist.angular.z = self.last_angular_z
-        else:
-            # --- [라인 놓침] ---
-            # 직진하지 않고 제자리에서 회전하며 라인 탐색
-            twist.linear.x = 0.0
-            twist.angular.z = self.last_angular_z
+        frame = cv2.flip(frame, -1)
+        h, w, _ = frame.shape
+        center = w / 2
 
+        # === ROI 설정 (하단 40%) ===
+        roi_top = int(h * 0.6)
+        roi = frame[roi_top:h, :]
+
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        _, thresh = cv2.threshold(gray, 80, 255, cv2.THRESH_BINARY_INV)
+
+        cx = self.find_line_center(thresh)
+
+        # === 목표 속도/각속도 계산 ===
+        if cx is not None:
+            err = cx - center
+            abs_err = abs(err)
+
+            # 방향 기억
+            if err > 10:
+                self.last_direction = 1
+            elif err < -10:
+                self.last_direction = -1
+
+            self.last_err = err
+
+            if abs_err < self.turbo_threshold:
+                # [터보] 직선 - 최고 속도, 미세 조향
+                target_speed = self.turbo_speed
+                target_angular = -err * 0.002
+
+            elif abs_err < self.normal_threshold:
+                # [일반] 약간 틀어짐 - 빠른 속도, 적당한 조향
+                target_speed = self.normal_speed
+                target_angular = -err * self.base_angular_gain
+
+            elif abs_err < self.curve_threshold:
+                # [커브] 많이 틀어짐 - 느리지만 전진하며 회전
+                target_speed = self.curve_speed
+                target_angular = -err * self.curve_angular_gain
+
+            else:
+                # [급커브] 심하게 틀어짐 - 최소 속도로 전진 + 강한 회전
+                target_speed = 0.3
+                target_angular = -self.last_direction * self.pivot_speed
+        else:
+            # [탐색] 라인 이탈 - 천천히 전진하며 마지막 방향으로 회전
+            target_speed = 0.2
+            target_angular = -self.last_direction * self.pivot_speed
+
+        # === Rate Limiter 적용 ===
+        self.current_speed = self.rate_limit(
+            self.current_speed, target_speed, self.max_accel, self.max_decel)
+
+        angular_diff = target_angular - self.current_angular
+        if abs(angular_diff) > self.max_angular_rate:
+            self.current_angular += self.max_angular_rate * np.sign(angular_diff)
+        else:
+            self.current_angular = target_angular
+
+        # === 명령 발행 ===
+        twist = Twist()
+        twist.linear.x = self.current_speed
+        twist.angular.z = self.current_angular
         self.publisher.publish(twist)
 
 def main(args=None):
     rclpy.init(args=args)
-    line_follower = LineFollower()
-    rclpy.spin(line_follower)
-    line_follower.destroy_node()
+    node = LineFollower()
+    rclpy.spin(node)
+    node.destroy_node()
     rclpy.shutdown()
 
 if __name__ == '__main__':
