@@ -26,11 +26,11 @@ class LineFollower(Node):
         # 제자리 회전 시 사용할 회전 속도
         self.pivot_speed = 0.5  
         # 직진 시 속도
-        self.forward_speed = 0.8
+        self.forward_speed = 0.9 #edtied 
         
         # 이 범위(픽셀)를 벗어나면 즉시 멈추고 제자리 회전
         # 값을 줄일수록 로봇이 더 자주 멈춰서 정교하게 돕니다.
-        self.pivot_threshold = 40 
+        self.pivot_threshold = 50 #edited
         
         self.last_angular_z = 0.0
 
@@ -46,7 +46,7 @@ class LineFollower(Node):
         
         # --- [시야 설정] ---
         # 직각 코너에서 엉뚱한 곳을 보지 않도록 하단 30%만 집중
-        search_top = int(h * 0.7)
+        search_top = int(h * 0.8)
         search_bot = h
         mask_image = current_frame[search_top:search_bot, 0:w]
         
