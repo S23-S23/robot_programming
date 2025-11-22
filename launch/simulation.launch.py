@@ -100,11 +100,11 @@ def generate_launch_description():
         output='screen'
     )
 
-    # line_follower_node = Node(
-    #     package='line_follower',
-    #     executable='line_follower',
-    #     output='screen',
-    # )
+    line_follower_node = Node(
+            package='simulation',           # 패키지 이름을 simulation으로 변경
+            executable='line_follower.py',  # 파이썬 스크립트 이름
+            output='screen',
+    )
     
 
     return LaunchDescription([
@@ -117,8 +117,8 @@ def generate_launch_description():
         description_launch_py,
         urdf_spawner,
         ros_gz_bridge,
-        # TimerAction(
-        #         period=20.0,
-        #         actions=[line_follower_node] #이거 만들어야함
-        # )
+        TimerAction(
+                period=10.0,
+                actions=[line_follower_node] 
+        )
     ])

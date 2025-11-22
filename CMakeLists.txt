@@ -28,6 +28,11 @@ install(TARGETS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+install(PROGRAMS
+  scripts/line_follower.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 # Install directories
 install(DIRECTORY
   launch
