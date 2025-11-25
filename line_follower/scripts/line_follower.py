@@ -42,7 +42,7 @@ class LineFollower(Node):
 
         # 안정성 카운터 (직진 시간 측정)
         self.stable_count = 0               # 안정적 직진 카운트
-        self.stable_threshold = 60          # 2초 (30Hz 기준, 60프레임)
+        self.stable_threshold = 20          # 2초 (30Hz 기준, 60프레임) #30 = 1초
         self.turbo_err_threshold = 20       # 터보 모드 진입 조건 (에러 20px 이내)
 
         # 곡선 예측 변수
